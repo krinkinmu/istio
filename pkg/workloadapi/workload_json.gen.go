@@ -138,6 +138,17 @@ func (this *Extension) UnmarshalJSON(b []byte) error {
 	return WorkloadUnmarshaler.Unmarshal(bytes.NewReader(b), this)
 }
 
+// MarshalJSON is a custom marshaler for Cluster
+func (this *Cluster) MarshalJSON() ([]byte, error) {
+	str, err := WorkloadMarshaler.MarshalToString(this)
+	return []byte(str), err
+}
+
+// UnmarshalJSON is a custom unmarshaler for Cluster
+func (this *Cluster) UnmarshalJSON(b []byte) error {
+	return WorkloadUnmarshaler.Unmarshal(bytes.NewReader(b), this)
+}
+
 var (
 	WorkloadMarshaler   = &jsonpb.Marshaler{}
 	WorkloadUnmarshaler = &jsonpb.Unmarshaler{AllowUnknownFields: true}

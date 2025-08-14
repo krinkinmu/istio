@@ -653,6 +653,32 @@ type Service struct {
 	// Waypoint is the waypoint proxy for this service. When set, all incoming requests must go
 	// through the waypoint.
 	Waypoint *GatewayAddress `protobuf:"bytes,7,opt,name=waypoint,proto3" json:"waypoint,omitempty"`
+	// Waypoint proxies for each cluster that can serve request for this service.
+	// In multi-cluster scenario where each cluster is configured independently we may end up with different waypoints
+	// in different clusters for the same service or even have waypoints configured only in some clusters but not all of
+	// them.
+	//
+	// To handle such non-uniform cases we add a mapping from cluster ID to a waypoint address that should be used when
+	// contacting the service in that cluster.
+	//
+	// In multi-cluster scenario, ztunnel makes load balancing decision in two steps (at least logically):
+	//
+	//  1. It picks the cluster first
+	//     - for now, ztunnel assumes that all clusters have equal weight
+	//     - ztunnel respects the load balancing policy of the local cluster, specifically, it will prefer staying in
+	//     the same cluster and/or network when thouse routing preferences are set
+	//  2. Once it picked a cluster, it will pick a backend in that cluster where the request will be routed.
+	//
+	// If we picked a cluster where a service has a configured waypoint, we will pick a backend of the waypoint,
+	// otherwise we will pick one of the available service backends.
+	//
+	// NOTE: that it could happen that once we picked a cluster we can't actually find any healthy backends in that
+	// cluster to chose from, in this case we will fall back to other clusters. If load balancing mode is FAILOVER we
+	// will even consider clusters that don't match the scope.
+	Waypoints map[string]*GatewayAddress `protobuf:"bytes,11,rep,name=waypoints,proto3" json:"waypoints,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// All clusters that serve requests for this service.
+	// This provides a list of all clusters that ztunnel can pick from when deciding where to route the request.
+	Clusters []*Cluster `protobuf:"bytes,12,rep,name=clusters,proto3" json:"clusters,omitempty"`
 	// Load balancing policy for selecting endpoints.
 	// Note: this applies only to connecting directly to the workload; when waypoints are used, the waypoint's load_balancing
 	// configuration is used.
@@ -740,6 +766,20 @@ func (x *Service) GetSubjectAltNames() []string {
 func (x *Service) GetWaypoint() *GatewayAddress {
 	if x != nil {
 		return x.Waypoint
+	}
+	return nil
+}
+
+func (x *Service) GetWaypoints() map[string]*GatewayAddress {
+	if x != nil {
+		return x.Waypoints
+	}
+	return nil
+}
+
+func (x *Service) GetClusters() []*Cluster {
+	if x != nil {
+		return x.Clusters
 	}
 	return nil
 }
@@ -1616,6 +1656,81 @@ func (x *Extension) GetConfig() *anypb.Any {
 	return nil
 }
 
+// Cluster provides details needed to pick the destination cluster when doing load balancing in ztunnel.
+// In multi-cluster scenario ztunnel makes load balancing decision in two steps:
+//  1. Pick the destination cluster first
+//  2. Pick a backend for the service in the destination cluster
+//
+// This message gives ztunnel the information needed to make the first step and pick the cluster where
+// the request will be routed.
+//
+// We initially assume that all clusters are equal weight, but once we have the metadata in place we can
+// actually provide knobs that would allow to change the weight of the cluster manually or derive it
+// automatically (i.e., by measuring latency and assigning higher weight to clusters with lower latency).
+type Cluster struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// What network does this cluster belong to.
+	Network string `protobuf:"bytes,1,opt,name=network,proto3" json:"network,omitempty"`
+	// Cluster name.
+	Cluster string `protobuf:"bytes,2,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	// Weight of this cluster for load balancing purposes.
+	// Clusters with higher weight will be more likely to be picked than clusters with lower weight.
+	Weight        uint32 `protobuf:"varint,3,opt,name=weight,proto3" json:"weight,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Cluster) Reset() {
+	*x = Cluster{}
+	mi := &file_workloadapi_workload_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Cluster) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Cluster) ProtoMessage() {}
+
+func (x *Cluster) ProtoReflect() protoreflect.Message {
+	mi := &file_workloadapi_workload_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Cluster.ProtoReflect.Descriptor instead.
+func (*Cluster) Descriptor() ([]byte, []int) {
+	return file_workloadapi_workload_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Cluster) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
+}
+
+func (x *Cluster) GetCluster() string {
+	if x != nil {
+		return x.Cluster
+	}
+	return ""
+}
+
+func (x *Cluster) GetWeight() uint32 {
+	if x != nil {
+		return x.Weight
+	}
+	return 0
+}
+
 var File_workloadapi_workload_proto protoreflect.FileDescriptor
 
 const file_workloadapi_workload_proto_rawDesc = "" +
@@ -1624,7 +1739,7 @@ const file_workloadapi_workload_proto_rawDesc = "" +
 	"\aAddress\x126\n" +
 	"\bworkload\x18\x01 \x01(\v2\x18.istio.workload.WorkloadH\x00R\bworkload\x123\n" +
 	"\aservice\x18\x02 \x01(\v2\x17.istio.workload.ServiceH\x00R\aserviceB\x06\n" +
-	"\x04type\"\xe7\x03\n" +
+	"\x04type\"\xc0\x05\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x1a\n" +
@@ -1633,13 +1748,18 @@ const file_workloadapi_workload_proto_rawDesc = "" +
 	"\x05ports\x18\x05 \x03(\v2\x14.istio.workload.PortR\x05ports\x12*\n" +
 	"\x11subject_alt_names\x18\x06 \x03(\tR\x0fsubjectAltNames\x12:\n" +
 	"\bwaypoint\x18\a \x01(\v2\x1e.istio.workload.GatewayAddressR\bwaypoint\x12D\n" +
+	"\twaypoints\x18\v \x03(\v2&.istio.workload.Service.WaypointsEntryR\twaypoints\x123\n" +
+	"\bclusters\x18\f \x03(\v2\x17.istio.workload.ClusterR\bclusters\x12D\n" +
 	"\x0eload_balancing\x18\b \x01(\v2\x1d.istio.workload.LoadBalancingR\rloadBalancing\x12;\n" +
 	"\vip_families\x18\t \x01(\x0e2\x1a.istio.workload.IPFamiliesR\n" +
 	"ipFamilies\x129\n" +
 	"\n" +
 	"extensions\x18\n" +
 	" \x03(\v2\x19.istio.workload.ExtensionR\n" +
-	"extensions\"\xbc\x03\n" +
+	"extensions\x1a\\\n" +
+	"\x0eWaypointsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
+	"\x05value\x18\x02 \x01(\v2\x1e.istio.workload.GatewayAddressR\x05value:\x028\x01\"\xbc\x03\n" +
 	"\rLoadBalancing\x12R\n" +
 	"\x12routing_preference\x18\x01 \x03(\x0e2#.istio.workload.LoadBalancing.ScopeR\x11routingPreference\x126\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\".istio.workload.LoadBalancing.ModeR\x04mode\x12O\n" +
@@ -1725,7 +1845,11 @@ const file_workloadapi_workload_proto_rawDesc = "" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\"M\n" +
 	"\tExtension\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
-	"\x06config\x18\x02 \x01(\v2\x14.google.protobuf.AnyR\x06config*C\n" +
+	"\x06config\x18\x02 \x01(\v2\x14.google.protobuf.AnyR\x06config\"U\n" +
+	"\aCluster\x12\x18\n" +
+	"\anetwork\x18\x01 \x01(\tR\anetwork\x12\x18\n" +
+	"\acluster\x18\x02 \x01(\tR\acluster\x12\x16\n" +
+	"\x06weight\x18\x03 \x01(\rR\x06weight*C\n" +
 	"\n" +
 	"IPFamilies\x12\r\n" +
 	"\tAUTOMATIC\x10\x00\x12\r\n" +
@@ -1761,7 +1885,7 @@ func file_workloadapi_workload_proto_rawDescGZIP() []byte {
 }
 
 var file_workloadapi_workload_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_workloadapi_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_workloadapi_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_workloadapi_workload_proto_goTypes = []any{
 	(IPFamilies)(0),                 // 0: istio.workload.IPFamilies
 	(NetworkMode)(0),                // 1: istio.workload.NetworkMode
@@ -1784,9 +1908,11 @@ var file_workloadapi_workload_proto_goTypes = []any{
 	(*NetworkAddress)(nil),          // 18: istio.workload.NetworkAddress
 	(*NamespacedHostname)(nil),      // 19: istio.workload.NamespacedHostname
 	(*Extension)(nil),               // 20: istio.workload.Extension
-	nil,                             // 21: istio.workload.Workload.ServicesEntry
-	(*wrapperspb.UInt32Value)(nil),  // 22: google.protobuf.UInt32Value
-	(*anypb.Any)(nil),               // 23: google.protobuf.Any
+	(*Cluster)(nil),                 // 21: istio.workload.Cluster
+	nil,                             // 22: istio.workload.Service.WaypointsEntry
+	nil,                             // 23: istio.workload.Workload.ServicesEntry
+	(*wrapperspb.UInt32Value)(nil),  // 24: google.protobuf.UInt32Value
+	(*anypb.Any)(nil),               // 25: google.protobuf.Any
 }
 var file_workloadapi_workload_proto_depIdxs = []int32{
 	12, // 0: istio.workload.Address.workload:type_name -> istio.workload.Workload
@@ -1794,34 +1920,37 @@ var file_workloadapi_workload_proto_depIdxs = []int32{
 	18, // 2: istio.workload.Service.addresses:type_name -> istio.workload.NetworkAddress
 	15, // 3: istio.workload.Service.ports:type_name -> istio.workload.Port
 	17, // 4: istio.workload.Service.waypoint:type_name -> istio.workload.GatewayAddress
-	11, // 5: istio.workload.Service.load_balancing:type_name -> istio.workload.LoadBalancing
-	0,  // 6: istio.workload.Service.ip_families:type_name -> istio.workload.IPFamilies
-	20, // 7: istio.workload.Service.extensions:type_name -> istio.workload.Extension
-	5,  // 8: istio.workload.LoadBalancing.routing_preference:type_name -> istio.workload.LoadBalancing.Scope
-	6,  // 9: istio.workload.LoadBalancing.mode:type_name -> istio.workload.LoadBalancing.Mode
-	7,  // 10: istio.workload.LoadBalancing.health_policy:type_name -> istio.workload.LoadBalancing.HealthPolicy
-	4,  // 11: istio.workload.Workload.tunnel_protocol:type_name -> istio.workload.TunnelProtocol
-	17, // 12: istio.workload.Workload.waypoint:type_name -> istio.workload.GatewayAddress
-	17, // 13: istio.workload.Workload.network_gateway:type_name -> istio.workload.GatewayAddress
-	3,  // 14: istio.workload.Workload.workload_type:type_name -> istio.workload.WorkloadType
-	16, // 15: istio.workload.Workload.application_tunnel:type_name -> istio.workload.ApplicationTunnel
-	21, // 16: istio.workload.Workload.services:type_name -> istio.workload.Workload.ServicesEntry
-	2,  // 17: istio.workload.Workload.status:type_name -> istio.workload.WorkloadStatus
-	13, // 18: istio.workload.Workload.locality:type_name -> istio.workload.Locality
-	1,  // 19: istio.workload.Workload.network_mode:type_name -> istio.workload.NetworkMode
-	20, // 20: istio.workload.Workload.extensions:type_name -> istio.workload.Extension
-	22, // 21: istio.workload.Workload.capacity:type_name -> google.protobuf.UInt32Value
-	15, // 22: istio.workload.PortList.ports:type_name -> istio.workload.Port
-	8,  // 23: istio.workload.ApplicationTunnel.protocol:type_name -> istio.workload.ApplicationTunnel.Protocol
-	19, // 24: istio.workload.GatewayAddress.hostname:type_name -> istio.workload.NamespacedHostname
-	18, // 25: istio.workload.GatewayAddress.address:type_name -> istio.workload.NetworkAddress
-	23, // 26: istio.workload.Extension.config:type_name -> google.protobuf.Any
-	14, // 27: istio.workload.Workload.ServicesEntry.value:type_name -> istio.workload.PortList
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	22, // 5: istio.workload.Service.waypoints:type_name -> istio.workload.Service.WaypointsEntry
+	21, // 6: istio.workload.Service.clusters:type_name -> istio.workload.Cluster
+	11, // 7: istio.workload.Service.load_balancing:type_name -> istio.workload.LoadBalancing
+	0,  // 8: istio.workload.Service.ip_families:type_name -> istio.workload.IPFamilies
+	20, // 9: istio.workload.Service.extensions:type_name -> istio.workload.Extension
+	5,  // 10: istio.workload.LoadBalancing.routing_preference:type_name -> istio.workload.LoadBalancing.Scope
+	6,  // 11: istio.workload.LoadBalancing.mode:type_name -> istio.workload.LoadBalancing.Mode
+	7,  // 12: istio.workload.LoadBalancing.health_policy:type_name -> istio.workload.LoadBalancing.HealthPolicy
+	4,  // 13: istio.workload.Workload.tunnel_protocol:type_name -> istio.workload.TunnelProtocol
+	17, // 14: istio.workload.Workload.waypoint:type_name -> istio.workload.GatewayAddress
+	17, // 15: istio.workload.Workload.network_gateway:type_name -> istio.workload.GatewayAddress
+	3,  // 16: istio.workload.Workload.workload_type:type_name -> istio.workload.WorkloadType
+	16, // 17: istio.workload.Workload.application_tunnel:type_name -> istio.workload.ApplicationTunnel
+	23, // 18: istio.workload.Workload.services:type_name -> istio.workload.Workload.ServicesEntry
+	2,  // 19: istio.workload.Workload.status:type_name -> istio.workload.WorkloadStatus
+	13, // 20: istio.workload.Workload.locality:type_name -> istio.workload.Locality
+	1,  // 21: istio.workload.Workload.network_mode:type_name -> istio.workload.NetworkMode
+	20, // 22: istio.workload.Workload.extensions:type_name -> istio.workload.Extension
+	24, // 23: istio.workload.Workload.capacity:type_name -> google.protobuf.UInt32Value
+	15, // 24: istio.workload.PortList.ports:type_name -> istio.workload.Port
+	8,  // 25: istio.workload.ApplicationTunnel.protocol:type_name -> istio.workload.ApplicationTunnel.Protocol
+	19, // 26: istio.workload.GatewayAddress.hostname:type_name -> istio.workload.NamespacedHostname
+	18, // 27: istio.workload.GatewayAddress.address:type_name -> istio.workload.NetworkAddress
+	25, // 28: istio.workload.Extension.config:type_name -> google.protobuf.Any
+	17, // 29: istio.workload.Service.WaypointsEntry.value:type_name -> istio.workload.GatewayAddress
+	14, // 30: istio.workload.Workload.ServicesEntry.value:type_name -> istio.workload.PortList
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_workloadapi_workload_proto_init() }
@@ -1843,7 +1972,7 @@ func file_workloadapi_workload_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workloadapi_workload_proto_rawDesc), len(file_workloadapi_workload_proto_rawDesc)),
 			NumEnums:      9,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

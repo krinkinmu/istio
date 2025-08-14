@@ -396,7 +396,7 @@ func New(options Options) Index {
 			// Only trigger push if the XDS object changed; the rest is just for computation of others
 			return a.Service
 		},
-		PushXdsAddress(a.XDSUpdater, model.ServiceInfo.ResourceName),
+		PushXdsAddress(a.XDSUpdater, model.ServiceInfo.ResourceName, "WorkloadServices"),
 	), false)
 
 	NamespacesInfo := krt.NewCollection(Namespaces, func(ctx krt.HandlerContext, i *corev1.Namespace) *model.NamespaceInfo {
@@ -480,7 +480,7 @@ func New(options Options) Index {
 			// Only trigger push if the XDS object changed; the rest is just for computation of others
 			return a.Workload
 		},
-		PushXdsAddress(a.XDSUpdater, model.WorkloadInfo.ResourceName),
+		PushXdsAddress(a.XDSUpdater, model.WorkloadInfo.ResourceName, "Workloads"),
 	), false)
 
 	if features.EnableIngressWaypointRouting {
@@ -915,7 +915,7 @@ func PushXds[T any](xds model.XDSUpdater, f func(T) model.ConfigKey) func(events
 	}
 }
 
-func PushXdsAddress[T any](xds model.XDSUpdater, f func(T) string) func(events []krt.Event[T]) {
+func PushXdsAddress[T any](xds model.XDSUpdater, f func(T) string, context string) func(events []krt.Event[T]) {
 	return func(events []krt.Event[T]) {
 		au := sets.New[string]()
 		for _, e := range events {
@@ -936,6 +936,7 @@ func PushXdsAddress[T any](xds model.XDSUpdater, f func(T) string) func(events [
 				Name: v,
 			})
 		}
+		log.Infof("Pushing XDS update, context: %s", context)
 		xds.ConfigUpdate(&model.PushRequest{
 			Full:             false,
 			AddressesUpdated: au,

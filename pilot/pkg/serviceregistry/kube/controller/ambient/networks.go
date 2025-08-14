@@ -49,6 +49,11 @@ func (n NetworkGateway) ResourceName() string {
 type networkCollections struct {
 	LocalSystemNamespace          krt.Singleton[ClusterNetwork]
 	RemoteSystemNamespaceNetworks krt.Collection[ClusterNetwork]
+	// This collection just merges the collections above for convenience.
+	// Before it was introduced SystemNamespaceNetworkByCluster index below was index over just RemoteSystemNamespaceNetworks
+	// and therefore didn't include mapping from the current cluster to the cluster network, which is somewhat inconveneient
+	// when you need to find networks of all clusters.
+	SystemNamespaceNetworks       krt.Collection[ClusterNetwork]
 	// SystemNamespaceNetworkByCluster is an index of cluster ID to the system namespace network
 	// for that cluster.
 	SystemNamespaceNetworkByCluster krt.Index[cluster.ID, ClusterNetwork]
@@ -117,7 +122,14 @@ func buildGlobalNetworkCollections(
 		}
 	}, opts.WithName("RemoteSystemNamespaceNetworks")...)
 
-	RemoteSystemNamespaceNetworksByCluster := krt.NewIndex(RemoteSystemNamespaceNetworks, "cluster", func(o ClusterNetwork) []cluster.ID {
+	SystemNamespaceNetworks := krt.JoinCollection(
+		[]krt.Collection[ClusterNetwork]{
+			LocalSystemNamespaceNetwork.AsCollection(),
+			RemoteSystemNamespaceNetworks,
+		},
+		opts.WithName("SystemNamespaceNetworks")...)
+
+	SystemNamespaceNetworksByCluster := krt.NewIndex(SystemNamespaceNetworks, "cluster", func(o ClusterNetwork) []cluster.ID {
 		return []cluster.ID{o.ClusterID}
 	})
 
@@ -189,11 +201,12 @@ func buildGlobalNetworkCollections(
 	})
 
 	return networkCollections{
-		SystemNamespaceNetworkByCluster: RemoteSystemNamespaceNetworksByCluster,
+		SystemNamespaceNetworkByCluster: SystemNamespaceNetworksByCluster,
 		NetworkGateways:                 MergedNetworkGateways,
 		GatewaysByNetwork:               GatewaysByNetwork,
 		LocalSystemNamespace:            LocalSystemNamespaceNetwork,
 		RemoteSystemNamespaceNetworks:   RemoteSystemNamespaceNetworks,
+		SystemNamespaceNetworks:         SystemNamespaceNetworks,
 	}
 }
 

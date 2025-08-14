@@ -182,6 +182,43 @@ func (this *Service) EqualVT(that *Service) bool {
 			}
 		}
 	}
+	if len(this.Waypoints) != len(that.Waypoints) {
+		return false
+	}
+	for i, vx := range this.Waypoints {
+		vy, ok := that.Waypoints[i]
+		if !ok {
+			return false
+		}
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &GatewayAddress{}
+			}
+			if q == nil {
+				q = &GatewayAddress{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if len(this.Clusters) != len(that.Clusters) {
+		return false
+	}
+	for i, vx := range this.Clusters {
+		vy := that.Clusters[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &Cluster{}
+			}
+			if q == nil {
+				q = &Cluster{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
 	return string(this.unknownFields) == string(that.unknownFields)
 }
 
@@ -609,6 +646,31 @@ func (this *Extension) EqualMessageVT(thatMsg proto.Message) bool {
 	}
 	return this.EqualVT(that)
 }
+func (this *Cluster) EqualVT(that *Cluster) bool {
+	if this == that {
+		return true
+	} else if this == nil || that == nil {
+		return false
+	}
+	if this.Network != that.Network {
+		return false
+	}
+	if this.Cluster != that.Cluster {
+		return false
+	}
+	if this.Weight != that.Weight {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *Cluster) EqualMessageVT(thatMsg proto.Message) bool {
+	that, ok := thatMsg.(*Cluster)
+	if !ok {
+		return false
+	}
+	return this.EqualVT(that)
+}
 func (m *Address) MarshalVTStrict() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -731,6 +793,40 @@ func (m *Service) MarshalToSizedBufferVTStrict(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.Clusters) > 0 {
+		for iNdEx := len(m.Clusters) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.Clusters[iNdEx].MarshalToSizedBufferVTStrict(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x62
+		}
+	}
+	if len(m.Waypoints) > 0 {
+		for k := range m.Waypoints {
+			v := m.Waypoints[k]
+			baseI := i
+			size, err := v.MarshalToSizedBufferVTStrict(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x12
+			i -= len(k)
+			copy(dAtA[i:], k)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(k)))
+			i--
+			dAtA[i] = 0xa
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(baseI-i))
+			i--
+			dAtA[i] = 0x5a
+		}
 	}
 	if len(m.Extensions) > 0 {
 		for iNdEx := len(m.Extensions) - 1; iNdEx >= 0; iNdEx-- {
@@ -1590,6 +1686,58 @@ func (m *Extension) MarshalToSizedBufferVTStrict(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *Cluster) MarshalVTStrict() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVTStrict(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *Cluster) MarshalToVTStrict(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVTStrict(dAtA[:size])
+}
+
+func (m *Cluster) MarshalToSizedBufferVTStrict(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Weight != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Weight))
+		i--
+		dAtA[i] = 0x18
+	}
+	if len(m.Cluster) > 0 {
+		i -= len(m.Cluster)
+		copy(dAtA[i:], m.Cluster)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Cluster)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if len(m.Network) > 0 {
+		i -= len(m.Network)
+		copy(dAtA[i:], m.Network)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Network)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *Address) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -1680,6 +1828,25 @@ func (m *Service) SizeVT() (n int) {
 	}
 	if len(m.Extensions) > 0 {
 		for _, e := range m.Extensions {
+			l = e.SizeVT()
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	if len(m.Waypoints) > 0 {
+		for k, v := range m.Waypoints {
+			_ = k
+			_ = v
+			l = 0
+			if v != nil {
+				l = v.SizeVT()
+			}
+			l += 1 + protohelpers.SizeOfVarint(uint64(l))
+			mapEntrySize := 1 + len(k) + protohelpers.SizeOfVarint(uint64(len(k))) + l
+			n += mapEntrySize + 1 + protohelpers.SizeOfVarint(uint64(mapEntrySize))
+		}
+	}
+	if len(m.Clusters) > 0 {
+		for _, e := range m.Clusters {
 			l = e.SizeVT()
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
@@ -1998,6 +2165,27 @@ func (m *Extension) SizeVT() (n int) {
 	if m.Config != nil {
 		l = (*anypb.Any)(m.Config).SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *Cluster) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.Network)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	l = len(m.Cluster)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Weight != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.Weight))
 	}
 	n += len(m.unknownFields)
 	return n

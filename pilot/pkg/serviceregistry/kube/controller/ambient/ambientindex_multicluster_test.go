@@ -33,6 +33,7 @@ import (
 	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/kube/kclient/clienttest"
 	"istio.io/istio/pkg/kube/krt"
+	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/ptr"
 	"istio.io/istio/pkg/test"
 	"istio.io/istio/pkg/test/util/assert"
@@ -162,19 +163,19 @@ func TestAmbientMulticlusterIndex_WaypointForWorkloadTraffic(t *testing.T) {
 				"svc2":     "10.0.0.1",
 			}
 			clusterToIPs := map[cluster.ID]map[string]string{
-				"cluster0": duplicateCIDRIPs,
-				"c1":       duplicateCIDRIPs,
-				"c2":       differentCIDRIPs,
+				testC: duplicateCIDRIPs,
+				"c1":  duplicateCIDRIPs,
+				"c2":  differentCIDRIPs,
 			}
 			clusterToNetwork := map[cluster.ID]string{
-				"cluster0": testNW,
-				"c1":       "testnetwork-2", // overlapping ips
-				"c2":       testNW,          // different ips
+				testC: testNW,
+				"c1":  "testnetwork-2", // overlapping ips
+				"c2":  testNW,          // different ips
 			}
 			networkGatewayIps := map[cluster.ID]string{ // these have to be global
-				"cluster0": "77.1.2.4",
-				"c1":       "77.1.2.49",
-				"c2":       "", // c2 and cluster0 share the same network, so no gw
+				testC: "77.1.2.4",
+				"c1":  "77.1.2.49",
+				"c2":   "", // c2 and cluster0 share the same network, so no gw
 			}
 			rClients := remoteClients.List()
 			clients := append([]*remoteAmbientClients{
@@ -218,7 +219,7 @@ func TestAmbientMulticlusterIndex_WaypointForWorkloadTraffic(t *testing.T) {
 						},
 					})
 
-					// Ensure the namespace network is set in up in the collection before doing other assertions
+					// Ensure the namespace network is set up in the collection before doing other assertions
 					assert.EventuallyEqual(t, func() bool {
 						networks := s.networks.SystemNamespaceNetworkByCluster.Lookup(client.clusterID)
 						if len(networks) == 0 {
@@ -296,6 +297,7 @@ func TestAmbientMulticlusterIndex_WaypointForWorkloadTraffic(t *testing.T) {
 
 			// clean up resources
 			s.deleteService(t, "svc2")
+			log.Errorf("Deleted service svc2, waiting for XDS updates");
 			s.assertEvent(t, s.podXdsName("pod1"), s.svcXdsName("svc2"))
 			s.deletePod(t, "pod1")
 			s.assertEvent(t, s.podXdsName("pod1"))

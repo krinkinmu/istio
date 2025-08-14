@@ -246,7 +246,7 @@ func (a *index) buildGlobalCollections(
 
 	GlobalMergedWorkloadServicesWithCluster := krt.NestedJoinWithMergeCollection(
 		GlobalWorkloadServicesWithCluster,
-		mergeServiceInfosWithCluster(localCluster.ID),
+		mergeServiceInfosWithCluster(GlobalNetworks, localCluster.ID),
 		opts.WithName("GlobalMergedServiceInfosWithCluster")...,
 	)
 
@@ -388,7 +388,7 @@ func (a *index) buildGlobalCollections(
 			// Only trigger push if the XDS object changed; the rest is just for computation of others
 			return a.Workload
 		},
-		PushXdsAddress(a.XDSUpdater, model.WorkloadInfo.ResourceName),
+		PushXdsAddress(a.XDSUpdater, model.WorkloadInfo.ResourceName, "SplitHorizongWorkloads"),
 	), false)
 
 	SplitHorizonWorkloadAddressIndex := krt.NewIndex[networkAddress, model.WorkloadInfo](SplitHorizonWorkloads, "networkAddress", networkAddressFromWorkload)
@@ -484,7 +484,7 @@ func (a *index) buildGlobalCollections(
 			// Only trigger push if the XDS object changed; the rest is just for computation of others
 			return a.Service
 		},
-		PushXdsAddress(a.XDSUpdater, model.ServiceInfo.ResourceName),
+		PushXdsAddress(a.XDSUpdater, model.ServiceInfo.ResourceName, "SplitHorizonServices"),
 	), false)
 
 	SplitHorizonServiceAddressIndex := krt.NewIndex[networkAddress, model.ServiceInfo](SplitHorizonServices, "serviceAddress", networkAddressFromService)
@@ -667,7 +667,7 @@ type simpleNetworkAddress struct {
 }
 
 func mergeServiceInfosWithCluster(
-	localClusterID cluster.ID,
+	networks networkCollections, localClusterID cluster.ID,
 ) func(serviceInfos []krt.ObjectWithCluster[model.ServiceInfo]) *krt.ObjectWithCluster[model.ServiceInfo] {
 	return func(serviceInfos []krt.ObjectWithCluster[model.ServiceInfo]) *krt.ObjectWithCluster[model.ServiceInfo] {
 		svcInfosLen := len(serviceInfos)
@@ -711,10 +711,38 @@ func mergeServiceInfosWithCluster(
 				targetPort:  p.TargetPort,
 			}
 		}
+		// To support non-uniform waypoint setups, e.g., setups where different clusters configure waypoints
+		// for the same service differently, we generate a map of clusters to waypoints used in those clusters
+		// (if the cluster configured a waypoint at all that is).
+		//
+		// clusters will contain the list of clusters that can serve requests to the service and waypoints will
+		// contain waypoints for the clusters where those are configured.
+		clusters := make([]*workloadapi.Cluster, 0, svcInfosLen)
+		waypoints := make(map[string]*workloadapi.GatewayAddress)
+
 		for _, obj := range serviceInfos {
 			if obj.Object == nil {
 				continue
 			}
+
+			// Find a network for the cluster. Alternatively, we can just keep the network around along with
+			// the cluster ID and avoid looking it up every time we need a network for a cluster.
+			// That being said, there isn't that many plances where we look at the network, so it very well
+			// might be that carrying network around everywhere is more trouble then it's worth.
+			nts := networks.SystemNamespaceNetworkByCluster.Lookup(obj.ClusterID)
+			if len(nts) == 0 {
+				// This should never happen as we check that all clusters get a network assigned before we
+				// reach this point.
+				log.Warnf("Cluster %s does not have a matching network in the index", obj.ClusterID)
+				continue
+			}
+			if len(nts) != 1 {
+				// This should never happen as we check that all clusters get a single network assigned
+				// before we reach this point.
+				log.Warnf("Cluster %s has %d matching networks in the index: %#v", obj.ClusterID, len(nts), nts)
+				continue
+			}
+			network := nts[0].Network
 
 			ports[portKey{
 				source:    obj.Object.Source.String(),
@@ -732,6 +760,15 @@ func mergeServiceInfosWithCluster(
 			})...)
 			sans.InsertAll(obj.Object.Service.GetSubjectAltNames()...)
 
+			clusters = append(clusters, &workloadapi.Cluster{
+				Network: string(network),
+				Cluster: string(obj.ClusterID),
+				Weight:  1,
+			})
+
+			if obj.Object.Service.Waypoint != nil {
+				waypoints[string(obj.ClusterID)] = protomarshal.Clone(obj.Object.Service.Waypoint)
+			}
 		}
 
 		basePorts := sets.New(slices.Map(base.Object.Service.Ports, workloadPortsToSimplePort)...)
@@ -757,6 +794,18 @@ func mergeServiceInfosWithCluster(
 			}
 		})
 		base.Object.Service.SubjectAltNames = sans.UnsortedList()
+
+		// At least for now, when there are no waypoints in any cluster, we don't even produce a list of clusters.
+		// We will have all the endpoints (local or remote) listed in the service, so ztunnel can select directly
+		// from those instead of trying to pick a cluster and then pick an endpoint in that cluster.
+		//
+		// We might eventually add a list of clusters back even when there are no waypoints, because they have cluster
+		// weights that could be used to distribute the load between clusters even when there are no waypoints. It's
+		// ok to skip it though for the PoC.
+		if len(waypoints) > 0 {
+			base.Object.Service.Clusters = clusters
+			base.Object.Service.Waypoints = waypoints
+		}
 
 		// Rememeber, we have to re-precompute the serviceinfo since we changed it
 		return &krt.ObjectWithCluster[model.ServiceInfo]{
