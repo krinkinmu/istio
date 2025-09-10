@@ -113,6 +113,16 @@ func (configgen *ConfigGeneratorImpl) buildWaypointInboundClusters(
 		clusters = append(clusters, cb.buildWaypointConnectOriginate(proxy, push))
 	}
 
+	// Create clusters that wrap traffic going to another network through an E/W gateway and because of that it has
+	// to be wrapped in double HBONE tunnel.
+	if features.EnableAmbientMultiNetwork {
+		clusters = append(
+			clusters,
+			cb.buildWaypointInnerConnectOriginate(proxy, push),
+			cb.buildWaypointOuterConnectOriginate(proxy, push),
+		)
+	}
+
 	for _, c := range clusters {
 		if c.TransportSocket != nil && c.TransportSocketMatches != nil {
 			log.Errorf("invalid cluster, multiple matches: %v", c.Name)
@@ -312,18 +322,66 @@ func (cb *ClusterBuilder) buildWaypointInboundVIP(proxy *model.Proxy, svcs map[h
 	return clusters
 }
 
+// buildWaypointInnerConnectOriginate creates a cluster that starts wrapping traffic in double CONNECT tunnel (a.k.a., double HBONE).
+// InnerConnectOrigiante cluster is responsible for creating the inner CONNECT tunnel and forwarding to an internal listener that
+// will provide the outer tunnel. InnerConnectOriginate would be a simple static cluster routing to OuterConnectOriginate internal
+// listener if we didn't need to wrap traffic into TLS as well in addition to CONNECT.
+func (cb *ClusterBuilder) buildWaypointInnerConnectOriginate(proxy *model.Proxy, push *model.PushContext) *cluster.Cluster {
+	// Normally for clusters that just redirect to internal listeners we would use util.DefaultInternalUpstreamTransportSocket.
+	// util.DefaultInternalUpstreamTransportSocket is a InternalUpstreamTransport socket wrapping a RawBufferTransport socket.
+	// For double HBONE we want something slightly different - we still need to use InternalUpstreamTransport socket because
+	// we redirect to an internal listener, but instead of keeping data as is we want to encrypt it using TLS, so instead of the
+	// RawBufferTransport we want to wrap a TLS transport socket.
+	tlsCtx := buildCommonConnectTLSContext(proxy, push)
+	sec_model.EnforceCompliance(tlsCtx)
+	transportSocket := &core.TransportSocket{
+		Name: "internal_upstream_with_tls",
+		ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: protoconv.MessageToAny(&tlsv3.UpstreamTlsContext{
+			CommonTlsContext: tlsCtx,
+		})},
+	}
+
+	// TODO(krinkin): do we need to validate any identities on the inner tunnel, for now I don't add anything except the default
+	// however as you can see below, it looks like for connect originate we have some validations for the peer identity.
+	c := &cluster.Cluster{
+		Name: InnerConnectOriginate,
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
+		CircuitBreakers:      &cluster.CircuitBreakers{
+			Thresholds: []*cluster.CircuitBreakers_Thresholds{getDefaultCircuitBreakerThresholds()},
+		},
+		LoadAssignment: &endpoint.ClusterLoadAssignment{
+			ClusterName: InnerConnectOriginate,
+			Endpoints:   util.BuildInternalEndpoint(OuterConnectOriginate, nil),
+		},
+		TypedExtensionProtocolOptions: h2connectUpgrade(),
+		TransportSocket: transportSocket,
+	}
+
+	c.AltStatName = util.DelimitedStatsPrefix(InnerConnectOriginate)
+
+	return c
+}
+
+// buildWaypointOuterConnectOriginate creates a cluster that finishes wrapping traffic in double CONNECT tunnel (a.k.a., double HBONE).
+// It's basically equivalent to the regular waypoint ConnectOriginate cluster and does the same thing, the only real difference is that
+// it wraps the data already wrapped into a CONNECT once.
+// TODO(krinkin): consider if just re-using the ConnectOriginate cluster directly is ok here, then we wouldn't need this code at all.
+func (cb *ClusterBuilder) buildWaypointOuterConnectOriginate(proxy *model.Proxy, push *model.PushContext) *cluster.Cluster {
+	return cb.buildConnectOriginate(OuterConnectOriginate, proxy, push, nil)
+}
+
 func (cb *ClusterBuilder) buildWaypointConnectOriginate(proxy *model.Proxy, push *model.PushContext) *cluster.Cluster {
 	// needed to enable cross-namespace waypoints when SkipValidateTrustDomain is set
 	// this ensures the match_typed_subject_alt_names list for the envoy config cluster is always empty
 	if features.SkipValidateTrustDomain {
-		return cb.buildConnectOriginate(proxy, push, nil)
+		return cb.buildConnectOriginate(ConnectOriginate, proxy, push, nil)
 	}
 	m := &matcher.StringMatcher{}
 
 	m.MatchPattern = &matcher.StringMatcher_Prefix{
 		Prefix: spiffe.URIPrefix + push.Mesh.GetTrustDomain() + "/ns/" + proxy.Metadata.Namespace + "/sa/",
 	}
-	return cb.buildConnectOriginate(proxy, push, m)
+	return cb.buildConnectOriginate(ConnectOriginate, proxy, push, m)
 }
 
 func (cb *ClusterBuilder) buildWaypointForwardInnerConnect() *cluster.Cluster {
@@ -362,7 +420,7 @@ func (cb *ClusterBuilder) buildForwardInnerConnect() *cluster.Cluster {
 	return c
 }
 
-func (cb *ClusterBuilder) buildConnectOriginate(proxy *model.Proxy, push *model.PushContext, uriSanMatchers ...*matcher.StringMatcher) *cluster.Cluster {
+func (cb *ClusterBuilder) buildConnectOriginate(name string, proxy *model.Proxy, push *model.PushContext, uriSanMatchers ...*matcher.StringMatcher) *cluster.Cluster {
 	ctx := buildCommonConnectTLSContext(proxy, push)
 	validationCtx := ctx.GetCombinedValidationContext().DefaultValidationContext
 	for _, uriSanMatcher := range uriSanMatchers {
@@ -376,7 +434,7 @@ func (cb *ClusterBuilder) buildConnectOriginate(proxy *model.Proxy, push *model.
 	// Compliance for Envoy tunnel upstreams.
 	sec_model.EnforceCompliance(ctx)
 	c := &cluster.Cluster{
-		Name:                          ConnectOriginate,
+		Name:                          name,
 		ClusterDiscoveryType:          &cluster.Cluster_Type{Type: cluster.Cluster_ORIGINAL_DST},
 		LbPolicy:                      cluster.Cluster_CLUSTER_PROVIDED,
 		ConnectTimeout:                protomarshal.Clone(cb.req.Push.Mesh.ConnectTimeout),
@@ -407,7 +465,7 @@ func (cb *ClusterBuilder) buildConnectOriginate(proxy *model.Proxy, push *model.
 		},
 	}
 
-	c.AltStatName = util.DelimitedStatsPrefix(ConnectOriginate)
+	c.AltStatName = util.DelimitedStatsPrefix(name)
 
 	return c
 }
