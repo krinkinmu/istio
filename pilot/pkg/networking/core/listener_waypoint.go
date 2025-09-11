@@ -74,29 +74,38 @@ func (lb *ListenerBuilder) serviceForHostname(name host.Name) *model.Service {
 }
 
 func (lb *ListenerBuilder) buildWaypointInbound() []*listener.Listener {
-	listeners := []*listener.Listener{}
-	// We create 3 listeners:
+	// For the common single-network case We create 3 listeners:
 	// 1. Decapsulation CONNECT listener.
 	// 2. IP dispatch listener, handling both VIPs and direct pod IPs.
 	// 3. One of two options based on the type of waypoint:
 	//    a. East-West Gateway: Forward the inner CONNECT to the backend ztunnel or waypoint.
 	//    b. Regular Waypoint: Encapsulate the inner CONNECT and forward to the ztunnel.
-	var forwarder *listener.Listener
+	//
+	// In case where we need to support multiple networks, we need to support double-HBONE
+	// and for that we need two additional listeneres to encapsulate the traffic into HBONE
+	// twice - we only need that in waypoints, so we skip generating those in E/W gateway.
 	var orderedWPS []*model.Service
 	wls, wps := findWaypointResources(lb.node, lb.push)
 	if wps != nil {
 		orderedWPS = wps.orderedServices
 	}
-	if features.EnableAmbientMultiNetwork && isEastWestGateway(lb.node) {
-		forwarder = buildWaypointForwardInnerConnectListener(lb.push, lb.node)
-	} else {
-		forwarder = buildWaypointConnectOriginateListener(lb.push, lb.node)
-	}
-	listeners = append(listeners,
+
+	listeners := []*listener.Listener{
 		lb.buildWaypointInboundConnectTerminate(),
 		lb.buildWaypointInternal(wls, orderedWPS),
-		forwarder)
+	}
 
+	if features.EnableAmbientMultiNetwork && isEastWestGateway(lb.node) {
+		listeners = append(listeners, buildWaypointForwardInnerConnectListener(lb.push, lb.node))
+	} else {
+		listeners = append(listeners, buildWaypointConnectOriginateListener(lb.push, lb.node))
+	}
+
+	if features.EnableAmbientMultiNetwork && !isEastWestGateway(lb.node) {
+		listeners = append(listeners,
+			buildWaypointInnerConnectOriginateListener(lb.push, lb.node),
+			buildWaypointOuterConnectOriginateListener(lb.push, lb.node))
+	}
 	return listeners
 }
 
@@ -572,6 +581,10 @@ func buildForwardInnerConnectListener(push *model.PushContext, proxy *model.Prox
 	return buildConnectForwarder(push, proxy, class, ForwardInnerConnect, false)
 }
 
+func buildConnectOriginateListener(push *model.PushContext, proxy *model.Proxy, class istionetworking.ListenerClass) *listener.Listener {
+	return buildConnectForwarder(push, proxy, class, ConnectOriginate, true)
+}
+
 func buildConnectForwarder(push *model.PushContext, proxy *model.Proxy, class istionetworking.ListenerClass,
 	clusterName string, tunnel bool,
 ) *listener.Listener {
@@ -615,8 +628,111 @@ func buildConnectForwarder(push *model.PushContext, proxy *model.Proxy, class is
 	return l
 }
 
-func buildConnectOriginateListener(push *model.PushContext, proxy *model.Proxy, class istionetworking.ListenerClass) *listener.Listener {
-	return buildConnectForwarder(push, proxy, class, ConnectOriginate, true)
+func buildWaypointInnerConnectOriginateListener(push *model.PushContext, proxy *model.Proxy) *listener.Listener {
+	setFilterState := &sfsnetwork.Config{
+		OnNewConnection: []*sfsvalue.FilterStateValue{
+			{
+				Key: &sfsvalue.FilterStateValue_ObjectKey{
+					ObjectKey: "envoy.filters.listener.original_dst.local_ip",
+				},
+				Value: &sfsvalue.FilterStateValue_FormatString{
+					FormatString: &core.SubstitutionFormatString{
+						Format: &core.SubstitutionFormatString_TextFormatSource{
+							TextFormatSource: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "%DYNAMIC_METADATA(envoy.filters.listener.original_dst:local)%",
+								},
+							},
+						},
+					},
+				},
+				SharedWithUpstream: sfsvalue.FilterStateValue_TRANSITIVE,
+			},
+			{
+				Key: &sfsvalue.FilterStateValue_ObjectKey{
+					ObjectKey: "istio.waypoint.hbone_target_address",
+				},
+				Value: &sfsvalue.FilterStateValue_FormatString{
+					FormatString: &core.SubstitutionFormatString{
+						Format: &core.SubstitutionFormatString_TextFormatSource{
+							TextFormatSource: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "%DYNAMIC_METADATA(istio.waypoint:hbone_target_address)%",
+								},
+							},
+						},
+					},
+				},
+				FactoryKey:         "envoy.string",
+				SharedWithUpstream: sfsvalue.FilterStateValue_TRANSITIVE,
+			},
+		},
+	}
+	tcpProxy := &tcp.TcpProxy{
+		StatPrefix: InnerConnectOriginate,
+		ClusterSpecifier: &tcp.TcpProxy_Cluster{Cluster: InnerConnectOriginate},
+		TunnelingConfig: &tcp.TcpProxy_TunnelingConfig{
+			Hostname: "%FILTER_STATE(istio.waypoint.hbone_target_address:PLAIN)%",
+		},
+	}
+	// TODO(krinkin): something to think about - given that we will have another internal listener after this one
+	// do we really need to log when we fail to establish a connection here? For now, I'm erroring on the side of
+	// being more verbose rather than less verbose, but still something to consider.
+	accessLogBuilder.setHboneOriginationAccessLog(push, proxy, tcpProxy, istionetworking.ListenerClassSidecarInbound)
+
+	l := &listener.Listener{
+		Name: InnerConnectOriginate,
+		UseOriginalDst:    wrappers.Bool(false),
+		ListenerSpecifier: &listener.Listener_InternalListener{InternalListener: &listener.Listener_InternalListenerConfig{}},
+		FilterChains: []*listener.FilterChain{{
+			Filters: []*listener.Filter{
+				{
+					Name: "propagate_endpoint_metadata",
+					ConfigType: &listener.Filter_TypedConfig{
+						TypedConfig: protoconv.MessageToAny(setFilterState),
+					},
+				},
+				{
+					Name: wellknown.TCPProxy,
+					ConfigType: &listener.Filter_TypedConfig{
+						TypedConfig: protoconv.MessageToAny(tcpProxy),
+					},
+				},
+			},
+		}},
+	}
+	accessLogBuilder.setListenerAccessLog(push, proxy, l, istionetworking.ListenerClassSidecarInbound)
+	return l
+}
+
+func buildWaypointOuterConnectOriginateListener(push *model.PushContext, proxy *model.Proxy) *listener.Listener {
+	tcpProxy := &tcp.TcpProxy{
+		StatPrefix: OuterConnectOriginate,
+		ClusterSpecifier: &tcp.TcpProxy_Cluster{Cluster: OuterConnectOriginate},
+		TunnelingConfig: &tcp.TcpProxy_TunnelingConfig{
+			Hostname: "%FILTER_STATE(istio.waypoint.hbone_target_address:PLAIN)%",
+		},
+	}
+	// TODO(krinkin): something to think about - given that we will have another internal listener after this one
+	// do we really need to log when we fail to establish a connection here? For now, I'm erroring on the side of
+	// being more verbose rather than less verbose, but still something to consider.
+	accessLogBuilder.setHboneOriginationAccessLog(push, proxy, tcpProxy, istionetworking.ListenerClassSidecarInbound)
+
+	l := &listener.Listener{
+		Name: OuterConnectOriginate,
+		UseOriginalDst:    wrappers.Bool(false),
+		ListenerSpecifier: &listener.Listener_InternalListener{InternalListener: &listener.Listener_InternalListenerConfig{}},
+		FilterChains: []*listener.FilterChain{{
+			Filters: []*listener.Filter{{
+				Name: wellknown.TCPProxy,
+				ConfigType: &listener.Filter_TypedConfig{
+					TypedConfig: protoconv.MessageToAny(tcpProxy),
+				},
+			}},
+		}},
+	}
+	accessLogBuilder.setListenerAccessLog(push, proxy, l, istionetworking.ListenerClassSidecarInbound)
+	return l
 }
 
 // buildWaypointHTTPFilters augments the common chain of Waypoint-bound HTTP filters.
