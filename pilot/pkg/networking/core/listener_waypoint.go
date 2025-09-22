@@ -657,7 +657,7 @@ func buildWaypointInnerConnectOriginateListener(push *model.PushContext, proxy *
 						Format: &core.SubstitutionFormatString_TextFormatSource{
 							TextFormatSource: &core.DataSource{
 								Specifier: &core.DataSource_InlineString{
-									InlineString: "%DYNAMIC_METADATA(istio.waypoint:hbone_target_address)%",
+									InlineString: "%DYNAMIC_METADATA(waypoint:hbone_target_address)%",
 								},
 							},
 						},
@@ -722,6 +722,9 @@ func buildWaypointOuterConnectOriginateListener(push *model.PushContext, proxy *
 		Name: OuterConnectOriginate,
 		UseOriginalDst:    wrappers.Bool(false),
 		ListenerSpecifier: &listener.Listener_InternalListener{InternalListener: &listener.Listener_InternalListenerConfig{}},
+		ListenerFilters: []*listener.ListenerFilter{
+			xdsfilters.OriginalDestination,
+		},
 		FilterChains: []*listener.FilterChain{{
 			Filters: []*listener.Filter{{
 				Name: wellknown.TCPProxy,

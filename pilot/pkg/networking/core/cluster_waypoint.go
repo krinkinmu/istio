@@ -334,12 +334,12 @@ func (cb *ClusterBuilder) buildWaypointInnerConnectOriginate(proxy *model.Proxy,
 	// RawBufferTransport we want to wrap a TLS transport socket.
 	tlsCtx := buildCommonConnectTLSContext(proxy, push)
 	sec_model.EnforceCompliance(tlsCtx)
-	transportSocket := &core.TransportSocket{
-		Name: "internal_upstream_with_tls",
+	transportSocket := util.InternalUpstreamTransportSocket("internal_upstream_with_tls", &core.TransportSocket{
+		Name: "tls",
 		ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: protoconv.MessageToAny(&tlsv3.UpstreamTlsContext{
 			CommonTlsContext: tlsCtx,
 		})},
-	}
+	})
 
 	// TODO(krinkin): do we need to validate any identities on the inner tunnel, for now I don't add anything except the default
 	// however as you can see below, it looks like for connect originate we have some validations for the peer identity.

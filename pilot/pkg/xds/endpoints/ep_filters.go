@@ -38,9 +38,6 @@ import (
 // Duplicated from networking/core/waypoint.go to avoid import cycle
 const innerConnectOriginate = "inner_connect_originate"
 
-// waypointMetadataKey is the name of the Envoy dynamic metadata key for double-HBONE related bits
-const waypointMetadataKey = "waypoint"
-
 // EndpointsByNetworkFilter is a network filter function to support Split Horizon EDS - filter the endpoints based on the network
 // of the connected sidecar. The filter will filter out all endpoints which are not present within the
 // sidecar network and add a gateway endpoint to remote networks that have endpoints
@@ -203,7 +200,7 @@ func (b *EndpointBuilder) EndpointsByNetworkFilter(endpoints []*LocalityEndpoint
 				// We need to add original dst metadata key with the actual E/W gateway address that we will connect to
 				gwEp.Metadata.FilterMetadata[util.OriginalDstMetadataKey] = util.BuildTunnelMetadataStruct(gwAddr, gwPort, "")
 				// and we need the original service domain name and port that to put in the :authority of the HTTP2 CONNECT.
-				gwEp.Metadata.FilterMetadata[waypointMetadataKey] = util.BuildDoubleTunnelMetadataStruct(string(b.service.Hostname), svcPort.Port)
+				gwEp.Metadata.FilterMetadata[util.WaypointMetadataKey] = util.BuildDoubleTunnelMetadataStruct(string(b.service.Hostname), svcPort.Port)
 			} else {
 				epAddr := util.BuildAddress(gw.Addr, gw.Port)
 				gwEp = &endpoint.LbEndpoint{
