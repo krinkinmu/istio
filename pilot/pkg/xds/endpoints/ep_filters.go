@@ -16,11 +16,14 @@ package endpoints
 
 import (
 	"math"
+	"net"
+	"strconv"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
 
+	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/networking/util"
 	labelutil "istio.io/istio/pilot/pkg/serviceregistry/util/label"
@@ -30,6 +33,13 @@ import (
 	"istio.io/istio/pkg/network"
 	"istio.io/istio/pkg/util/protomarshal"
 )
+
+// innerConnectOriginate is the name for the resources associated with the origination of double-HBONE connection.
+// Duplicated from networking/core/waypoint.go to avoid import cycle
+const innerConnectOriginate = "inner_connect_originate"
+
+// waypointMetadataKey is the name of the Envoy dynamic metadata key for double-HBONE related bits
+const waypointMetadataKey = "waypoint"
 
 // EndpointsByNetworkFilter is a network filter function to support Split Horizon EDS - filter the endpoints based on the network
 // of the connected sidecar. The filter will filter out all endpoints which are not present within the
@@ -41,6 +51,18 @@ func (b *EndpointBuilder) EndpointsByNetworkFilter(endpoints []*LocalityEndpoint
 		// Multi-network is not configured (this is the case by default). Just access all endpoints directly.
 		return endpoints
 	}
+
+	// In ambient multi-network we need to generate E/W gateway endpoints differently compared to when we operate
+	// in sidecar mode. So we check that:
+	//
+	// 1. The ambient multi-Network feature is enabled in the first place
+	// 2. That multi-network waypoints are enabled
+	// 3. The proxy is a waypoint proxy
+	//
+	// If both conditions are true we conclude that we need to generate ambient multi-network style G/W endpoints.
+	// This assumes that cluster on a remote network is configured in the same mode of operation though (e.g., if
+	// local cluster uses ambient, then the remote cluster is also using ambient).
+	isAmbientMultiNetworkWaypoint := features.EnableAmbientMultiNetwork && features.EnableAmbientWaypointMultiNetwork && isWaypointProxy(b.proxy)
 
 	// A new array of endpoints to be returned that will have both local and
 	// remote gateways (if any)
@@ -102,9 +124,11 @@ func (b *EndpointBuilder) EndpointsByNetworkFilter(endpoints []*LocalityEndpoint
 
 				continue
 			}
-			// Cross-network traffic relies on mTLS to be enabled for SNI routing
+			// Cross-network traffic relies on double-HBONE in ambient mode and on mTLS for SNI routing in sidecar mode.
+			// So if we are not in ambient multi-network mode and mTLS is not enabled for the target endpoint on a remote
+			// network we skip it alltogether.
 			// TODO BTS may allow us to work around this
-			if !isMtlsEnabled(lbEp) {
+			if !isAmbientMultiNetworkWaypoint && !isMtlsEnabled(lbEp) {
 				continue
 			}
 
@@ -123,8 +147,6 @@ func (b *EndpointBuilder) EndpointsByNetworkFilter(endpoints []*LocalityEndpoint
 				log.Warnf("gateway weight must be greater than 0, scaleFactor is %d", scaleFactor)
 				epWeight = 1
 			}
-			epAddr := util.BuildAddress(gw.Addr, gw.Port)
-
 			// Generate a fake IstioEndpoint to carry network and cluster information.
 			gwIstioEp := &model.IstioEndpoint{
 				Network: gw.Network,
@@ -134,27 +156,80 @@ func (b *EndpointBuilder) EndpointsByNetworkFilter(endpoints []*LocalityEndpoint
 				Labels: labelutil.AugmentLabels(nil, gw.Cluster, "", "", gw.Network),
 			}
 
-			// Generate the EDS endpoint for this gateway.
-			gwEp := &endpoint.LbEndpoint{
-				HostIdentifier: &endpoint.LbEndpoint_Endpoint{
-					Endpoint: &endpoint.Endpoint{
-						Address: epAddr,
+			// Here we generate the EDS endpoint for the E/W gateways that replace the original endpoint.
+			// Depending on whether we operate in ambient mode or not, we generated endpoints for E/W
+			// gateways differently as we use somewhat different protocols in those two distinct cases.
+			var gwEp *endpoint.LbEndpoint
+
+			if isAmbientMultiNetworkWaypoint {
+				if gw.HBONEPort == 0 {
+					// if gateway does not have a valid HBONE port, we probably should not send traffic there as the
+					// mesh is likely misconfigured, so log this event and skip the gateway.
+					log.Warnf("gateway %s does not accept HBONE connections likely due to a misconfiguration, ignoring it", gw.Addr)
+					continue
+				}
+
+				gwAddr := gw.Addr
+				gwPort := int(gw.HBONEPort)
+
+				addr := net.JoinHostPort(gwAddr, strconv.Itoa(gwPort))
+				svcPort := b.servicePort(b.port)
+
+				gwEp = &endpoint.LbEndpoint{
+					HostIdentifier: &endpoint.LbEndpoint_Endpoint{
+						Endpoint: &endpoint.Endpoint{
+							// We need to redirect to an internal listener that will tunnel the data through
+							// a double-HBONE, we still use the E/W gateway address though for the endpoint
+							// id.
+							Address: util.BuildInternalAddressWithIdentifier(innerConnectOriginate, addr),
+						},
 					},
-				},
-				LoadBalancingWeight: &wrappers.UInt32Value{
-					Value: epWeight,
-				},
-				Metadata: &core.Metadata{},
+					LoadBalancingWeight: &wrappers.UInt32Value{
+						Value: epWeight,
+					},
+					Metadata: &core.Metadata{},
+				}
+
+				// TODO: figure out a way to extract locality data from the gateway public endpoints in meshNetworks
+				util.AppendLbEndpointMetadata(&model.EndpointMetadata{
+					Network:   gw.Network,
+					// I don't think that TLSMode affects anythig downstream of this code anymore, but for ambient
+					// mode we do not rely on the legacy Istio mTLS, so I explicitly mark it as disabled.
+					TLSMode:   model.DisabledTLSModeLabel,
+					ClusterID: gw.Cluster,
+					Labels:    labels.Instance{},
+				}, gwEp.Metadata)
+
+				// We need to add original dst metadata key with the actual E/W gateway address that we will connect to
+				gwEp.Metadata.FilterMetadata[util.OriginalDstMetadataKey] = util.BuildTunnelMetadataStruct(gwAddr, gwPort, "")
+				// and we need the original service domain name and port that to put in the :authority of the HTTP2 CONNECT.
+				gwEp.Metadata.FilterMetadata[waypointMetadataKey] = util.BuildDoubleTunnelMetadataStruct(string(b.service.Hostname), svcPort.Port)
+			} else {
+				epAddr := util.BuildAddress(gw.Addr, gw.Port)
+				gwEp = &endpoint.LbEndpoint{
+					HostIdentifier: &endpoint.LbEndpoint_Endpoint{
+						Endpoint: &endpoint.Endpoint{
+							Address: epAddr,
+						},
+					},
+					LoadBalancingWeight: &wrappers.UInt32Value{
+						Value: epWeight,
+					},
+					Metadata: &core.Metadata{},
+				}
+
+				// TODO: figure out a way to extract locality data from the gateway public endpoints in meshNetworks
+				util.AppendLbEndpointMetadata(&model.EndpointMetadata{
+					Network:   gw.Network,
+					TLSMode:   model.IstioMutualTLSModeLabel,
+					ClusterID: gw.Cluster,
+					Labels:    labels.Instance{},
+				}, gwEp.Metadata)
 			}
-			// TODO: figure out a way to extract locality data from the gateway public endpoints in meshNetworks
-			util.AppendLbEndpointMetadata(&model.EndpointMetadata{
-				Network:   gw.Network,
-				TLSMode:   model.IstioMutualTLSModeLabel,
-				ClusterID: gw.Cluster,
-				Labels:    labels.Instance{},
-			}, gwEp.Metadata)
+
 			// Currently gateway endpoint does not support tunnel.
 			lbEndpoints.append(gwIstioEp, gwEp)
+
 		}
 
 		// Endpoint members could be stripped or aggregated by network. Adjust weight value here.

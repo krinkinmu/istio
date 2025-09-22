@@ -63,6 +63,10 @@ var (
 	EnableAmbientMultiNetwork = registerAmbient("AMBIENT_ENABLE_MULTI_NETWORK", false, false,
 		"If true, the multi-network functionality will be enabled.")
 
+	EnableAmbientWaypointMultiNetwork = registerAmbient("AMBIENT_ENABLE_MULTI_NETWORK_WAYPOINT", false, false,
+		"If true and AMBIENT_ENABLE_MULTI_NETWORK is also true, it will enable waypoints to route requests to clusters on remote networks, "+
+		"while by default waypoints will keep traffic local.")
+
 	WaypointLayeredAuthorizationPolicies = env.Register(
 		"ENABLE_LAYERED_WAYPOINT_AUTHORIZATION_POLICIES",
 		false,
