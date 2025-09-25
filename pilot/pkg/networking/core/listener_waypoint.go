@@ -65,8 +65,9 @@ import (
 
 // These are both the current defaults used by the ztunnel hyper http2 server
 const (
-	h2KeepaliveInterval = 10 * time.Second
-	h2KeepaliveTimeout  = 20 * time.Second
+	h2KeepaliveInterval    = 10 * time.Second
+	h2KeepaliveTimeout     = 20 * time.Second
+	l7PoliciesStatusHeader = "istio-l7-policies-applied"
 )
 
 func (lb *ListenerBuilder) serviceForHostname(name host.Name) *model.Service {
@@ -673,6 +674,13 @@ func buildWaypointInnerConnectOriginateListener(push *model.PushContext, proxy *
 		ClusterSpecifier: &tcp.TcpProxy_Cluster{Cluster: InnerConnectOriginate},
 		TunnelingConfig: &tcp.TcpProxy_TunnelingConfig{
 			Hostname: "%FILTER_STATE(istio.waypoint.hbone_target_address:PLAIN)%",
+			HeadersToAdd: []*core.HeaderValueOption{{
+				AppendAction: core.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD,
+				Header: &core.HeaderValue{
+					Key: l7PoliciesStatusHeader,
+					Value: "true",
+				},
+			}},
 		},
 	}
 	// TODO(krinkin): something to think about - given that we will have another internal listener after this one
@@ -711,6 +719,13 @@ func buildWaypointOuterConnectOriginateListener(push *model.PushContext, proxy *
 		ClusterSpecifier: &tcp.TcpProxy_Cluster{Cluster: OuterConnectOriginate},
 		TunnelingConfig: &tcp.TcpProxy_TunnelingConfig{
 			Hostname: "%FILTER_STATE(istio.waypoint.hbone_target_address:PLAIN)%",
+			HeadersToAdd: []*core.HeaderValueOption{{
+				AppendAction: core.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD,
+				Header: &core.HeaderValue{
+					Key: l7PoliciesStatusHeader,
+					Value: "true",
+				},
+			}},
 		},
 	}
 	// TODO(krinkin): something to think about - given that we will have another internal listener after this one
