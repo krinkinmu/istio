@@ -932,5 +932,10 @@ func isEastWestGateway(node *model.Proxy) bool {
 // considered a waypoint proxy, so to tell if it's actually a waypoint just checking node type
 // isn't enough
 func isWaypointProxy(node *model.Proxy) bool {
-	return node.Type == model.Waypoint && !isEastWestGateway(node)
+	if node == nil || node.Type != model.Waypoint {
+		return false
+	}
+	controller, isManagedGateway := node.Labels[label.GatewayManaged.Name]
+
+	return isManagedGateway && controller == constants.ManagedGatewayMeshControllerLabel
 }
