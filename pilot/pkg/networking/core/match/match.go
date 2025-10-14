@@ -57,6 +57,12 @@ var (
 			Key: filters.AuthorityFilterStateKey,
 		}),
 	}
+	L7StatusFilterStateInput = &xds.TypedExtensionConfig{
+		Name: "l7-policies-status-filter-state",
+		TypedConfig: protoconv.MessageToAny(&network.FilterStateInput{
+			Key: filters.L7PoliciesStatusFilterStateKey, 
+		}),
+	}
 )
 
 type Mapper struct {
@@ -92,6 +98,10 @@ func NewSourceIP() Mapper {
 
 func NewDestinationPort() Mapper {
 	return newMapper(DestinationPort)
+}
+
+func NewL7Status() Mapper {
+	return newMapper(L7StatusFilterStateInput)
 }
 
 type ProtocolMatch struct {

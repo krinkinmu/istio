@@ -57,6 +57,7 @@ import (
 	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/config/host"
 	"istio.io/istio/pkg/config/protocol"
+	"istio.io/istio/pkg/log"
 	"istio.io/istio/pkg/proto"
 	"istio.io/istio/pkg/slices"
 	"istio.io/istio/pkg/util/sets"
@@ -173,6 +174,7 @@ func (lb *ListenerBuilder) buildHCMConnectTerminateChain(routes []*route.Route) 
 	h.HttpFilters = append(filters,
 		xdsfilters.WaypointDownstreamMetadataFilter,
 		xdsfilters.ConnectAuthorityFilter,
+		xdsfilters.L7PoliciesStatusFilter,
 		xdsfilters.BuildRouterFilter(xdsfilters.RouterFilterContext{
 			StartChildSpan:       false,
 			SuppressDebugHeaders: ph.SuppressDebugHeaders,
@@ -241,9 +243,39 @@ func (lb *ListenerBuilder) buildWaypointInboundConnectTerminate() *listener.List
 	return lb.buildConnectTerminateListener(routes)
 }
 
+// TODO(krinkin): This is essential a copy from endpoint_builder.go, don't duplicate, just find a common place for this
+// logic, put it there and reuse.
+func (lb *ListenerBuilder) findServiceWaypoint(svc *model.Service) host.Name {
+	log.Warnf("Looking up waypoint for service %q", string(svc.Hostname))
+	if lb.node.Type != model.Router && !isEastWestGateway(lb.node) {
+		log.Warnf("Neither router nor E/W gateway")
+		return ""
+	}
+	if !svc.HasAddressOrAssigned(lb.node.Metadata.ClusterID) {
+		log.Warnf("Service %q has no address", string(svc.Hostname))
+		return ""
+	}
+	ws := lb.push.ServicesWithWaypoint(svc.Attributes.Namespace + "/" + string(svc.Hostname))
+	if len(ws) == 0 {
+		log.Warnf("Haven't found waypoint for service %q", string(svc.Hostname))
+		return ""
+	}
+	if len(ws) > 1 {
+		log.Warnf("unexpected multiple waypoint services for %s", svc.Hostname)
+	}
+	waypoint := ws[0]
+	if !waypoint.IngressUseWaypoint && !isEastWestGateway(lb.node) {
+		log.Warnf("Found waypoint for service %q but it's not for E/W gateway", string(svc.Hostname))
+		return ""
+	}
+	log.Warnf("Found waypoint %q for service %q", waypoint.WaypointHostname, string(svc.Hostname))
+	return host.Name(waypoint.WaypointHostname)
+}
+
 // This is the regular waypoint flow, where we terminate the tunnel, and then re-encap.
 func (lb *ListenerBuilder) buildWaypointInternal(wls []model.WorkloadInfo, svcs []*model.Service) *listener.Listener {
 	isEastWestGateway := isEastWestGateway(lb.node)
+	log.Warnf("ListenerBuilder.buildWaypointInternal has been called, waypoint is %t", isEastWestGateway)
 	ipMatcher := &matcher.IPMatcher{}
 	svcHostnameMap := &matcher.Matcher_MatcherTree_MatchMap{
 		Map: make(map[string]*matcher.Matcher_OnMatch),
@@ -294,7 +326,12 @@ func (lb *ListenerBuilder) buildWaypointInternal(wls []model.WorkloadInfo, svcs 
 			},
 		}
 	}
+	// TODO(krinkin): make a pass over svcs to create a list of known services (IOW, services for which we will generate
+	// a cluster). This map will be useful later when for the same service we generate two routes: one going through the
+	// waypoint and another going directly to the service backends. With this map we can check if clusters for both routes
+	// will be generated and we will not end up with an invalid route configuration due to misconfiguration.
 	for _, svc := range svcs {
+		log.Warnf("ListenerBuilder.buildWaypointInternal processing service %q", string(svc.Hostname))
 		svcAddresses := svc.GetAllAddressesForProxy(lb.node)
 		portMapper := match.NewDestinationPort()
 		for _, port := range svc.Ports {
@@ -337,13 +374,52 @@ func (lb *ListenerBuilder) buildWaypointInternal(wls []model.WorkloadInfo, svcs 
 				Name:    cc.clusterName,
 			}
 			if isEastWestGateway && features.EnableAmbientMultiNetwork {
+				log.Warnf("ListenerBuilder.buildWaypointInternal in E/W gateway and with ambient multo-network enabled checks service %q", string(svc.Hostname))
+				// If the service has a waypoint, in ambient multi-network we have to account for the possibility that L7
+				// policies have been applied already, and if so, we need to skip the waypoint. So if the service has a
+				// waypoint we check it here and generate a somewhat different filter chain matching rule.
+				//
+				// This rule will either use the service filter chain or the waypoint filter chain (and corresponding clusters).
+				//
+				// How do we know that a waypoint filter chain exist? It's a bit obscure, but waypoint is also a service for
+				// which this very function will generate a filter chain (at least if the waypoint is marked as global, as it's
+				// supposed to for global services).
+				//
+				// TODO(krinkin): I feel like it's hacky to just rely on the waypoint filter chanin to exist here, but on the flip
+				// side we also want to avoid duplicating waypoint filter chain. At the very least we should double check that
+				// waypoint service is actually there and maybe even consider re-organizing this code a bit and generating things
+				// in two stages - first going over the services and finding all the needed waypoint services and generating filters
+				// for those and then handling the rest of the services.
+				if waypoint := lb.findServiceWaypoint(svc); waypoint != "" {
+					log.Warnf("ListenerBuilder.buildWaypointInternal service %q has a waypoint %q", string(svc.Hostname), string(waypoint))
+					hbonePort := 15008
+					// We rely here on filter chain name and cluster name matching.
+					waypointClusterName := model.BuildSubsetKey(model.TrafficDirectionInboundVIP, "tcp", waypoint, hbonePort)
+
+					m := match.NewL7Status()
+					// If L7 policies have been applied already send directly to the service cluster skipping waypoints
+					m.Map["true"] = match.ToChain(tcpChain.Name)
+					// TODO(krinkin): should we blackhole the traffic explicitly if it's anything other than "true" or "false"?
+					// The header could be unset as well, in which case the value will be "-" - we could treat that as false as well.
+					m.OnNoMatch = match.ToChain(waypointClusterName)
+
+					l7StatusMatcher := match.ToMatcher(m.BuildMatcher())
+					portMapper.Map[portString] = l7StatusMatcher
+					svcHostnameMap.Map[authorityKey] = l7StatusMatcher
+				} else {
+					log.Warnf("ListenerBuilder.buildWaypointInternal service %q does not have a waypoint", string(svc.Hostname))
+					portMapper.Map[portString] = match.ToChain(tcpChain.Name)
+					svcHostnameMap.Map[authorityKey] = match.ToChain(tcpChain.Name)
+				}
 				// We want to send to all ports regardless of protocol, but we want the filter chains to tcp proxy no matter what
 				// (since we're expecting double-hbone). There's no point in sniffing, so we just send to the TCP chain.
+				//
+				// NOTE: see the TODO comment above, we don't add waypoint tcp chain explicitly here because we rely on the fact
+				// that waypoint is also a service visible by the E/W gateway and therefore in another iteration of this loop we
+				// will have the relevant filter chain generated.
 				chains = append(chains, tcpChain)
 				// Pick the TCP chain; as long as the cluster exists (and we'll ensure it does if we're terminating),
 				// traffic should end up at the correct destination
-				portMapper.Map[portString] = match.ToChain(tcpClusterName)
-				svcHostnameMap.Map[authorityKey] = match.ToChain(tcpChain.Name)
 				portProtocols[port.Port] = protocol.TCP // Inner HBONE with no SNI == TCP protocol for listener purposes
 			} else {
 				if port.Protocol.IsUnsupported() {
