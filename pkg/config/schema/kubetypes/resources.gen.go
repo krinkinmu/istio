@@ -80,6 +80,8 @@ func getGvk(obj any) (config.GroupVersionKind, bool) {
 		return gvk.HTTPRoute, true
 	case *k8sioapiautoscalingv2.HorizontalPodAutoscaler:
 		return gvk.HorizontalPodAutoscaler, true
+	case *k8sioapinetworkingv1.IPAddress:
+		return gvk.IPAddress, true
 	case *sigsk8siogatewayapiinferenceextensionapiv1.InferencePool:
 		return gvk.InferencePool, true
 	case *k8sioapinetworkingv1.Ingress:

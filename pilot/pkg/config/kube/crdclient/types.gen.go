@@ -1300,6 +1300,24 @@ var translationMap = map[config.GroupVersionKind]func(r runtime.Object) config.C
 			Status: &obj.Status,
 		}
 	},
+	gvk.IPAddress: func(r runtime.Object) config.Config {
+		obj := r.(*k8sioapinetworkingv1.IPAddress)
+		return config.Config{
+			Meta: config.Meta{
+				GroupVersionKind:  gvk.IPAddress,
+				Name:              obj.Name,
+				Namespace:         obj.Namespace,
+				Labels:            obj.Labels,
+				Annotations:       obj.Annotations,
+				ResourceVersion:   obj.ResourceVersion,
+				CreationTimestamp: obj.CreationTimestamp.Time,
+				OwnerReferences:   obj.OwnerReferences,
+				UID:               string(obj.UID),
+				Generation:        obj.Generation,
+			},
+			Spec: &obj.Spec,
+		}
+	},
 	gvk.InferencePool: func(r runtime.Object) config.Config {
 		obj := r.(*sigsk8siogatewayapiinferenceextensionapiv1.InferencePool)
 		return config.Config{

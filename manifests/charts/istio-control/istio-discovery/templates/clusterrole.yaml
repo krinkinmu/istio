@@ -50,10 +50,7 @@ rules:
 {{- end }}
   - apiGroups: ["networking.istio.io"]
     verbs: [ "get", "watch", "list", "update", "patch", "create", "delete" ]
-    resources: [ "workloadentries" ]
-  - apiGroups: ["networking.istio.io"]
-    verbs: [ "get", "watch", "list", "update", "patch", "create", "delete" ]
-    resources: [ "workloadentries/status",  "serviceentries/status" ]
+    resources: [ "workloadentries", "workloadentries/status",  "serviceentries/status" ]
   - apiGroups: ["security.istio.io"]
     verbs: [ "get", "watch", "list", "update", "patch", "create", "delete" ]
     resources: [ "authorizationpolicies/status" ]
@@ -95,6 +92,10 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/status"]
     verbs: ["*"]
+
+  - apiGroups: ["networking.k8s.io"]
+    verbs: [ "get", "list", "watch" ]
+    resources: [ "ipaddresses" ]
 
   # required for CA's namespace controller
   - apiGroups: [""]

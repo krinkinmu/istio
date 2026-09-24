@@ -86,6 +86,8 @@ func GetWriteClient[T runtime.Object](c ClientGetter, namespace string) ktypes.W
 		return c.GatewayAPI().GatewayV1().HTTPRoutes(namespace).(ktypes.WriteAPI[T])
 	case *k8sioapiautoscalingv2.HorizontalPodAutoscaler:
 		return c.Kube().AutoscalingV2().HorizontalPodAutoscalers(namespace).(ktypes.WriteAPI[T])
+	case *k8sioapinetworkingv1.IPAddress:
+		return c.Kube().NetworkingV1().IPAddresses().(ktypes.WriteAPI[T])
 	case *sigsk8siogatewayapiinferenceextensionapiv1.InferencePool:
 		return c.GatewayAPIInference().InferenceV1().InferencePools(namespace).(ktypes.WriteAPI[T])
 	case *k8sioapinetworkingv1.Ingress:
@@ -193,6 +195,8 @@ func GetClient[T, TL runtime.Object](c ClientGetter, namespace string) ktypes.Re
 		return c.GatewayAPI().GatewayV1().HTTPRoutes(namespace).(ktypes.ReadWriteAPI[T, TL])
 	case *k8sioapiautoscalingv2.HorizontalPodAutoscaler:
 		return c.Kube().AutoscalingV2().HorizontalPodAutoscalers(namespace).(ktypes.ReadWriteAPI[T, TL])
+	case *k8sioapinetworkingv1.IPAddress:
+		return c.Kube().NetworkingV1().IPAddresses().(ktypes.ReadWriteAPI[T, TL])
 	case *sigsk8siogatewayapiinferenceextensionapiv1.InferencePool:
 		return c.GatewayAPIInference().InferenceV1().InferencePools(namespace).(ktypes.ReadWriteAPI[T, TL])
 	case *k8sioapinetworkingv1.Ingress:
@@ -300,6 +304,8 @@ func gvrToObject(g schema.GroupVersionResource) runtime.Object {
 		return &sigsk8siogatewayapiapisv1.HTTPRoute{}
 	case gvr.HorizontalPodAutoscaler:
 		return &k8sioapiautoscalingv2.HorizontalPodAutoscaler{}
+	case gvr.IPAddress:
+		return &k8sioapinetworkingv1.IPAddress{}
 	case gvr.InferencePool:
 		return &sigsk8siogatewayapiinferenceextensionapiv1.InferencePool{}
 	case gvr.Ingress:
@@ -494,6 +500,13 @@ func getInformerFiltered(c ClientGetter, opts ktypes.InformerOptions, g schema.G
 		}
 		w = func(options metav1.ListOptions) (watch.Interface, error) {
 			return c.Kube().AutoscalingV2().HorizontalPodAutoscalers(opts.Namespace).Watch(context.Background(), options)
+		}
+	case gvr.IPAddress:
+		l = func(options metav1.ListOptions) (runtime.Object, error) {
+			return c.Kube().NetworkingV1().IPAddresses().List(context.Background(), options)
+		}
+		w = func(options metav1.ListOptions) (watch.Interface, error) {
+			return c.Kube().NetworkingV1().IPAddresses().Watch(context.Background(), options)
 		}
 	case gvr.InferencePool:
 		l = func(options metav1.ListOptions) (runtime.Object, error) {

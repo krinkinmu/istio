@@ -21,6 +21,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	v1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -51,12 +52,12 @@ import (
 )
 
 type globalServiceAddress struct {
-	name      types.NamespacedName
-	addresses []*workloadapi.NetworkAddress
+	name    types.NamespacedName
+	address simpleNetworkAddress
 }
 
 func (a globalServiceAddress) ResourceName() string {
-	return a.name.Namespace + "/" + a.name.Name
+	return a.address.network + "/" + a.name.Namespace + "/" + a.name.Name + "/" + a.address.ip.String()
 }
 
 func (a *index) buildGlobalCollections(
@@ -73,6 +74,13 @@ func (a *index) buildGlobalCollections(
 	options Options,
 	opts krt.OptionsBuilder,
 ) {
+	localIPAddresses := krt.NewInformer[*netv1.IPAddress](localCluster.Client, opts.With(
+		krt.WithName(fmt.Sprintf("informer/IPAddresses[%s]", localCluster.ID)),
+		krt.WithMetadata(krt.Metadata{
+			multicluster.ClusterKRTMetadataKey: localCluster.ID,
+		}),
+	)...)
+
 	LocalPods := localCluster.Pods()
 	LocalNamespaces := localCluster.Namespaces()
 	LocalNodes := localCluster.Nodes()
@@ -423,37 +431,38 @@ func (a *index) buildGlobalCollections(
 		return []networkAddress{netaddr}
 	})
 
-	globalServiceVIPs := krt.NewCollection(localCluster.Services(), func(ctx krt.HandlerContext, svc *v1.Service) *globalServiceAddress {
-		serviceLabels := labels.Set(svc.Labels)
-		name, ok := serviceLabels["istio.io/original-service-name"]
+	globalServiceVIPs := krt.NewCollection(localIPAddresses, func(ctx krt.HandlerContext, addr *netv1.IPAddress) *globalServiceAddress {
+		labels := labels.Set(addr.Labels)
+		name, ok := labels["istio.io/original-service-name"]
 		if !ok || name == "" {
 			return nil
 		}
-		namespace, ok := serviceLabels["istio.io/original-service-namespace"]
+		namespace, ok := labels["istio.io/original-service-namespace"]
 		if !ok || namespace == "" {
 			return nil
 		}
-
-		addresses, err := slices.MapErr(getVIPs(svc), func(addr string) (*workloadapi.NetworkAddress, error) {
-			return toNetworkAddress(ctx, addr, GlobalNetworks.FetchLocalNetworkID)
-		})
+		ip, err := netip.ParseAddr(addr.Name)
 		if err != nil {
-			// This is quite unlikely to happen in practice, so providing a detailed log entry should
-			// be enough.
-			log.Warnf("Failed to parse VIPs of service %s/%s to provide service %s/%s with local network VIP: %v", svc.Namespace, svc.Name, namespace, name, err)
+			log.Warnf("Failed to parse IP address %q to assign to %s/%s: %v", addr.Name, namespace, name, err)
 			return nil
 		}
+		network := GlobalNetworks.FetchLocalNetworkID(ctx).String()
 		return &globalServiceAddress{
 			name: types.NamespacedName{
 				Namespace: namespace,
 				Name:      name,
 			},
-			addresses: addresses,
+			address: simpleNetworkAddress{
+				network: network,
+				ip:      netip.PrefixFrom(ip, ip.BitLen()),
+			},
 		}
 	}, opts.WithName("GlobalServiceAddresses")...)
-	globalServiceVIPIndex := krt.NewIndex[types.NamespacedName, globalServiceAddress](globalServiceVIPs, "globalServiceAddresses", func(gsa globalServiceAddress) []types.NamespacedName {
-		return []types.NamespacedName{gsa.name}
-	})
+	globalServiceVIPIndex := krt.NewIndex[types.NamespacedName, globalServiceAddress](globalServiceVIPs, "globalServiceAddresses",
+		func(gsa globalServiceAddress) []types.NamespacedName {
+			return []types.NamespacedName{gsa.name}
+		},
+	)
 
 	SplitHorizonServices := krt.NewCollection(
 		GlobalMergedWorkloadServices,
@@ -490,10 +499,12 @@ func (a *index) buildGlobalCollections(
 
 			vips := sets.New[simpleNetworkAddress]()
 			vips.InsertAll(slices.Map(svc.Service.GetAddresses(), networkAddressToSimple)...)
+
 			gsas := globalServiceVIPIndex.Fetch(ctx, types.NamespacedName{Namespace: svc.Service.Namespace, Name: svc.Service.Name})
-			for _, gsa := range gsas {
-				vips.InsertAll(slices.Map(gsa.addresses, networkAddressToSimple)...)
-			}
+			vips.InsertAll(slices.Map(gsas, func(gsa globalServiceAddress) simpleNetworkAddress {
+				return gsa.address
+			})...)
+
 			orderedVIPs := slices.SortBy(vips.UnsortedList(), func(a simpleNetworkAddress) string {
 				return a.network + "/" + a.ip.String()
 			})

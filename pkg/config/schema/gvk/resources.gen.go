@@ -38,6 +38,7 @@ var (
 	HTTPRoute_v1alpha2             = config.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1alpha2", Kind: "HTTPRoute"}
 	HTTPRoute_v1beta1              = config.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1beta1", Kind: "HTTPRoute"}
 	HorizontalPodAutoscaler        = config.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"}
+	IPAddress                      = config.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "IPAddress"}
 	InferencePool                  = config.GroupVersionKind{Group: "inference.networking.k8s.io", Version: "v1", Kind: "InferencePool"}
 	Ingress                        = config.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "Ingress"}
 	IngressClass                   = config.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "IngressClass"}
@@ -150,6 +151,8 @@ func ToGVR(g config.GroupVersionKind) (schema.GroupVersionResource, bool) {
 		return gvr.HTTPRoute_v1beta1, true
 	case HorizontalPodAutoscaler:
 		return gvr.HorizontalPodAutoscaler, true
+	case IPAddress:
+		return gvr.IPAddress, true
 	case InferencePool:
 		return gvr.InferencePool, true
 	case Ingress:
@@ -297,6 +300,8 @@ func ToKind(g config.GroupVersionKind) (kind.Kind, bool) {
 		return kind.HTTPRoute, true
 	case HorizontalPodAutoscaler:
 		return kind.HorizontalPodAutoscaler, true
+	case IPAddress:
+		return kind.IPAddress, true
 	case InferencePool:
 		return kind.InferencePool, true
 	case Ingress:
@@ -427,6 +432,8 @@ func FromGVR(g schema.GroupVersionResource) (config.GroupVersionKind, bool) {
 		return HTTPRoute, true
 	case gvr.HorizontalPodAutoscaler:
 		return HorizontalPodAutoscaler, true
+	case gvr.IPAddress:
+		return IPAddress, true
 	case gvr.InferencePool:
 		return InferencePool, true
 	case gvr.Ingress:
@@ -550,6 +557,8 @@ func KebabKind(k string) string {
 		return "http-route"
 	case "HorizontalPodAutoscaler":
 		return "horizontal-pod-autoscaler"
+	case "IPAddress":
+		return "i-p-address"
 	case "InferencePool":
 		return "inference-pool"
 	case "Ingress":

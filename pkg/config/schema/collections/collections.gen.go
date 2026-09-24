@@ -315,6 +315,21 @@ var (
 		ValidateProto: validation.EmptyValidate,
 	}.MustBuild()
 
+	IPAddress = resource.Builder{
+		Identifier:    "IPAddress",
+		Group:         "networking.k8s.io",
+		Kind:          "IPAddress",
+		Plural:        "ipaddresses",
+		Version:       "v1",
+		Proto:         "k8s.io.api.networking.v1.IPAddressSpec",
+		ReflectType:   reflect.TypeOf(&k8sioapinetworkingv1.IPAddressSpec{}).Elem(),
+		ProtoPackage:  "k8s.io/api/networking/v1",
+		ClusterScoped: true,
+		Synthetic:     false,
+		Builtin:       true,
+		ValidateProto: validation.EmptyValidate,
+	}.MustBuild()
+
 	InferencePool = resource.Builder{
 		Identifier: "InferencePool",
 		Group:      "inference.networking.k8s.io",
@@ -901,6 +916,7 @@ var (
 		MustAdd(GatewayClass).
 		MustAdd(HTTPRoute).
 		MustAdd(HorizontalPodAutoscaler).
+		MustAdd(IPAddress).
 		MustAdd(InferencePool).
 		MustAdd(Ingress).
 		MustAdd(IngressClass).
@@ -953,6 +969,7 @@ var (
 		MustAdd(GatewayClass).
 		MustAdd(HTTPRoute).
 		MustAdd(HorizontalPodAutoscaler).
+		MustAdd(IPAddress).
 		MustAdd(InferencePool).
 		MustAdd(Ingress).
 		MustAdd(IngressClass).
